@@ -9,3 +9,4 @@
     - splunk_phantom
     - splunk_phantom_configure
     - caldera
+    - splunk_phantom_sos_configure

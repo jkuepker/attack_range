@@ -1,0 +1,4 @@
+---
+
+- include: configure_phantom_sos_demo.yml
+  when: phantom_server == "1"

@@ -1,0 +1,216 @@
+###### phantom reporting
+
+- name: Download phantom reporting app
+  get_url:
+    url: https://webaccessible-jkuepker.s3.amazonaws.com/splunk-app-for-phantom-reporting_100.tgz
+    dest: /tmp/splunk-phantom-reporting.tgz
+
+- name: Download phantom reporting app
+  get_url:
+    url: https://webaccessible-jkuepker.s3.amazonaws.com/phantom-remote-search_1014.tgz
+    dest: /tmp/splunk-phantom-remote-search.tgz
+
+- name: Download phantom reporting app
+  get_url:
+    url: https://webaccessible-jkuepker.s3.amazonaws.com/phantom_hec_inputs.conf
+    dest: /tmp/phantom_hec_inputs.conf
+
+- name: create local folder for phantom reporting inputs
+  file:
+    path: /opt/splunk/etc/apps/splunk_httpinput/local
+    state: directory
+    owner: splunk
+    group: splunk
+
+- name: copy inputs for phantom reporting to splunk server
+  copy:
+    src: /tmp/phantom_hec_inputs.conf
+    dest: /opt/splunk/etc/apps/splunk_httpinput/local/inputs.conf
+    owner: splunk
+    group: splunk
+    remote_src: yes
+
+- name: install phantom remote search app
+  unarchive:
+    src: /tmp/splunk-phantom-remote-search.tgz
+    dest: /opt/splunk/etc/apps/
+    remote_src: yes
+    owner: splunk
+    group: splunk
+
+- name: install phantom reporting app
+  unarchive:
+    src: /tmp/splunk-phantom-reporting.tgz
+    dest: /opt/splunk/etc/apps/
+    remote_src: yes
+    owner: splunk
+    group: splunk
+
+- name: fix directory perms 
+  shell: chown -R splunk:splunk /opt/splunk/etc/apps/
+  async: 60
+  poll: 10
+  become: yes
+
+
+- name: restart splunk
+  service: name=splunk state=restarted
+  become: yes
+
+- name: configure splunk phantomsearchuser account
+  uri:
+    url: https://127.0.0.1:8089/services/authentication/users
+    method: POST
+    body: 'name=phantomsearchuser&password={{phantom_admin_password}}&roles=phantomsearch&realname="Phantom Search"&force-change-pass=false'
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+    status_code: 200, 201
+
+- name: configure splunk phantomdelete role account
+  uri:
+    url: https://127.0.0.1:8089/services/authorization/roles/admin
+    method: POST
+    body: 'imported_roles=power&imported_roles=phantom&imported_roles=user&imported_roles=can_delete'
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+    status_code: 200, 201
+
+- name: configure splunk phantomdeleteuser account
+  uri:
+    url: https://127.0.0.1:8089/services/authentication/users
+    method: POST
+    body: 'name=phantomdeleteuser&password={{phantom_admin_password}}&roles=phantomdelete&realname="Phantom Delete"&force-change-pass=false'
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+    status_code: 200, 201
+
+- name: restart splunk
+  service: name=splunk state=restarted
+  become: yes
+
+- name: configure phantom external search
+  uri:
+    url: https://{{ phantom_server_private_ip }}/rest/system_settings
+    method: POST
+    body: '{"search_settings":{"status":"Automatic","elastic_search":{"enabled":false},"splunk":{"local":{"enabled":"false"},"remote":{"enabled":true,"rest":{"use_ssl":true,"verify_ssl":false,"port":"8089"},"host":"{{splunk_server_private_ip}}","user":{"search":{"username":"phantomsearchuser","password":"{{phantom_admin_password}}"},"delete":{"username":"phantomdeleteuser","password":"{{phantom_admin_password}}"}},"hec":{"use_ssl":true,"token":"8106a7ac-7856-4be2-a005-942c82768932","verify_ssl":false,"port":"8088"},"type":"standalone"}}}}'
+    body_format: json
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+
+### phzcatman install
+
+- name: create phcatzman user
+  uri:
+    url: https://{{ phantom_server_private_ip }}/rest/ph_user
+    method: POST
+    body: '{"username": "phzcatman", "roles": ["Automation", "Administrator"], "type": "automation", "allowed_ips": ["any"]}'
+    body_format: json
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: user
+
+- name: display phzcatman user id
+  debug:
+    msg: "phzcatman user id is {{user.json.id}}"
+
+- name: fetch phantom api token for phzcatman user
+  uri:
+    url: https://{{ phantom_server_private_ip }}/rest/ph_user/{{user.json.id}}/token
+    method: GET
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: phzcatman_token
+
+- name: display phzcatman api token
+  debug:
+    msg: "phzcatman api token is {{ phzcatman_token.json.key }}"
+
+- name: Include vars .token file
+  include_vars:
+    file: "../../apps/.token"
+
+- name: display token
+  debug:
+    msg: "gh token is {{ghtoken}}"
+
+- name: configure phzcatman asset
+  uri:
+    url: https://{{ phantom_server_private_ip }}/rest/asset
+    method: POST
+    body: '{"configuration":{"phantom_base_url":"https://{{ phantom_server_private_ip }}","github_personal_access_token":"{{ ghtoken }}","phantom_api_key":"{{phzcatman_token.json.key}}"},"name":"zcatman","product_name":"ZCatman","product_vendor":"Splunk"}'
+    body_format: json
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: phzcatman_asset
+
+- name: get list of apps
+  uri:
+    url: https://{{ phantom_server_private_ip }}/rest/app
+    method: GET
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: apps
+
+- name: display phzcatman asset id
+  debug:
+    msg: "The ZCatman has an asset id of {{ phzcatman_asset.json.id }}"
+
+
+- name: display phzcatman app id
+  debug:
+    msg: "The installed ZCatman has an app id of {{ item.id }} and an asset id of {{ phzcatman_asset.json.id }}"
+  loop: "{{ apps.json.data }}"
+  when: "item.product_name == 'ZCatman'"
+  
+
+## make sure that phzcatman is the first app installed
+- name: run phzcatman
+  uri:
+    url: https://{{ phantom_server_private_ip }}/rest/action_run
+    method: POST
+    body: '{"action":"load demo data","container_id":1,"name":"user initiated load demo data action","targets":[{"assets":[{{ phzcatman_asset.json.id }}],"app_id":{{ item.id }},"parameters":[]}]}'
+    body_format: json
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+  loop: "{{ apps.json.data }}"
+  when: "item.product_name == 'ZCatman'"
+  async: 600
+  poll: 10
+
+- name: restart splunk
+  service: name=splunk state=restarted
+  become: yes
+
+- name: generate hec uuid for token
+  debug:
+    msg: "your potential hec token is {{ range_name | to_uuid }}"
+
+- name: test replace static hec token
+  replace:
+    path: /tmp/phantom_hec_inputs.conf
+    regexp: '8106a7ac-7856-4be2-a005-942c82768932'
+    replace: '{{ range_name | to_uuid }}'

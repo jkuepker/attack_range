@@ -1,0 +1,110 @@
+#### SOS DEMO ####
+# running post-install commands for SOS demo.
+- name: add demo_configuration label for phzcatman
+  uri:
+    url: https://127.0.0.1/rest/system_settings/events
+    method: POST
+    body: '{"add_label": true, "label_name": "demo_configuration"}'
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+
+
+- name: add splunk_case label for phzcatman
+  uri:
+    url: https://127.0.0.1/rest/system_settings/events
+    method: POST
+    body: '{"add_label": true, "label_name": "splunk_case"}'
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+
+
+- name: install generator app
+  yum:
+    name: https://repo.phantom.us/phantom/4.8/apps/x86_64/phantom_generator-4.0.7.x86_64.rpm
+    state: present
+
+- name: configure generator asset
+  uri:
+    url: https://127.0.0.1/rest/asset
+    method: POST
+    body: '{ "disabled": false, "type": "generic", "product_name": "Generator", "description": "Asset to generate example events.", "tags": ["phantom-config"], "configuration": { "limit_status_to_new": true, "create_artifacts": 10, "create_containers": 10, "event_severity": "Random", "ingest": { "container_label": "events", "start_time_epoch_utc": null }, "event_sensitivity": "Random", "event_status": "Random", "artifact_count_override": false }, "product_vendor": "Generic", "name": "event-generator" }'
+    body_format: json
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: generator
+
+- name: generate an event
+  uri:
+    url: https://127.0.0.1/rest/asset/{{ generator.json.id }}
+    method: POST
+    body: '{"ingest_now":true,"container_source_ids":"","max_containers":1,"max_artifacts":1}'
+    body_format: json
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+
+- name: fetch phantom api token
+  uri:
+    url: https://127.0.0.1/rest/ph_user/2/token
+    method: GET
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: api_token
+
+- name: Add environment_variables needed for phzcatman
+  shell: psql -d phantom -c psql -d phantom -c {{'"'}}UPDATE system_settings SET environment_variables = '{\"PHANTOM_API_KEY\"{{':'}} {\"type\"{{':'}} \"password\", \"value\"{{':'}} \"{{api_token.json.key}}\"}, \"NO_PROXY\"{{':'}} {\"type\"{{':'}} \"text\", \"value\"{{':'}} \"127.0.0.1,localhost\"}}' WHERE system_settings.id = 1;{{'"'}}
+  async: 600
+  poll: 10
+  become: yes
+  
+    
+- name: Add accept admin eula and update some admin settings
+  shell: psql -d phantom -c "UPDATE system_settings SET administrator_contact = 'newadmin@localhost', company_name = 'Splunk', system_name = '{{ range_name }}', eula_accepted = true, fqdn = '{{ phantom_server_private_ip }}' WHERE system_settings.id = 1;"
+  async: 600
+  poll: 10
+  become: yes
+
+- name: disable initial onboarding
+  uri:
+    url: https://127.0.0.1/rest/user_settings
+    method: POST
+    body: '{ "redirect_onboarding": false, "show_onboarding": false }'
+    body_format: json
+    user: admin
+    password: "{{phantom_admin_password}}"
+    force_basic_auth: yes
+    validate_certs: no
+
+
+- name: copy phzcatman to server
+  copy:
+    src: "../../apps/phzcatman_062920153846.tgz"
+    dest: /tmp/phzcatman.tgz
+
+- name: copy phantom app install script to server
+  copy:
+    src: "../../apps/install_ph_app.py"
+    dest: /tmp/install_ph_app.py
+
+# install python requirements 
+# - name: install required python modules
+#   pip:
+#     name: requests
+
+# running phzcatman commands for SOS demo.
+- name: install phzcatman
+  shell: cd /tmp && python install_ph_app.py /tmp/phzcatman.tgz {{phantom_admin_password}}
+  async: 600
+  poll: 10
+  become: yes
+
+#### END SOS DEMO ####
